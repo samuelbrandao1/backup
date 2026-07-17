@@ -8,7 +8,6 @@ git-delta
 github-cli
 kitty
 lazygit
-pokeget
 ripgrep
 spotify
 starship
@@ -16,5 +15,4 @@ stow
 yazi
 zoxide
 zsh
-zsh-vi-mode
 discord

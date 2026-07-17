@@ -12,7 +12,6 @@ obsidian
 pinta
 signal-desktop
 typora
-gnu-screen-recorder
 tldr
 docker
 lazydocker
