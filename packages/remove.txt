@@ -24,8 +24,6 @@ cups-filters
 cups-pdf
 system-config-printer
 tree-sitter-cli
-base-devel
-base
 gvfs-smb
 gvfs-nfs
 gvfs-mtp
