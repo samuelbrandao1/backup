@@ -1,4 +1,7 @@
 curl
+bubblewrap
+base
+base-devel
 zsh
 kitty
 7zip
