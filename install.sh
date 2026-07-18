@@ -22,3 +22,6 @@ git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:
 # zsh-vi-mode
 git clone https://github.com/jeffreytse/zsh-vi-mode \
   $ZSH_CUSTOM/plugins/zsh-vi-mode
+
+# Atuin
+curl --proto '=https' --tlsv1.2 -LsSf https://setup.atuin.sh | sh
