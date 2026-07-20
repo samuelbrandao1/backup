@@ -22,3 +22,5 @@ yazi
 zoxide
 zsh
 discord
+age
+glow
