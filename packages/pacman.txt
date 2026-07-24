@@ -24,3 +24,4 @@ zsh
 discord
 glow
 gocryptfs
+zathura
