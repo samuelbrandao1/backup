@@ -25,3 +25,6 @@ discord
 glow
 gocryptfs
 zathura
+zathura-pdf-mupdf
+zathura-djvu
+zathura-ps
