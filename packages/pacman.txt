@@ -18,7 +18,7 @@ ripgrep
 spotify
 starship
 stow
-yazi
+superfile
 zoxide
 zsh
 discord
