@@ -1,5 +1,4 @@
-#!/bin/bash
-
-if [ -s packages/remove.txt ]; then
-    sudo pacman -Rns $(cat packages/remove.txt)
-fi
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec "$ROOT/backup" remove "$@"

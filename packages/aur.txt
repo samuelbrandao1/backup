@@ -1,1 +1,8 @@
+focusclock-git
+hydra-launcher-bin
+melonds
+omarchy-walker
 pokeget
+protonplus
+sioyek-git
+ticktick

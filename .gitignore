@@ -1,0 +1,4 @@
+/snapshots/
+/.backup-rollback/
+__pycache__/
+*.pyc
