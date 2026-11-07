@@ -1,7 +1,0 @@
-# Caminhos relativos ao HOME. Diretórios são copiados por inteiro.
-# Revise antes de save: configurações podem conter tokens e dados privados.
-.zshrc
-.config/starship.toml
-.config/kitty/kitty.conf
-.config/yazi
-.config/lazygit

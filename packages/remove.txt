@@ -1,1 +1,0 @@
-# Remoção é opcional e explícita. Lista antiga em remove.legacy.txt.

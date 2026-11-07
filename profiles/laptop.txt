@@ -1,2 +1,0 @@
-# Arquivos exclusivos do laptop. Não inclua monitores do desktop aqui.
-# .config/hypr/monitors.conf

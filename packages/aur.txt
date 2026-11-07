@@ -1,7 +1,8 @@
+# Aplicativos AUR compartilhados; exige yay ou paru.
+# Componentes específicos do Omarchy ficam sob controle de cada máquina.
 focusclock-git
 hydra-launcher-bin
 melonds
-omarchy-walker
 pokeget
 protonplus
 sioyek-git

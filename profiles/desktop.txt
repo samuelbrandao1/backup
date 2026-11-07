@@ -1,2 +1,0 @@
-# Arquivos exclusivos do desktop.
-# .config/hypr/monitors.conf

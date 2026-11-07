@@ -1,4 +1,4 @@
-# Mesmos programas e configurações nas duas máquinas
+# Laptop e desktop com as mesmas configurações
 
 Na máquina em que você fez mudanças:
 
@@ -6,55 +6,57 @@ Na máquina em que você fez mudanças:
 ./backup save
 ```
 
-No outro computador:
+Na outra máquina:
 
 ```bash
 ./backup apply
 ```
 
-**Só isso no dia a dia.** Execute dentro da pasta do repositório. Não existem perfis para escolher, snapshots para transferir ou commits para fazer manualmente.
+`save` copia as configurações selecionadas, cria um commit e envia ao GitHub.
+`apply` baixa do GitHub, guarda as configurações anteriores, aplica as novas e instala os aplicativos que faltam.
 
 ## Primeira vez no outro computador
 
-Com Arch Linux, Python 3, Git e sudo disponíveis, clone e aplique:
+Requer Arch Linux, Python 3, Git e sudo. Para aplicativos AUR, requer yay ou paru.
 
 ```bash
 git clone https://github.com/samuelbrandao1/backup.git ~/backup
-cd ~/backup && ./backup apply
+cd ~/backup
+./backup apply
 ```
 
-O Git precisa estar autenticado para enviar com `save`. Se você já usa este repositório para fazer push, continue com a mesma autenticação. Caso contrário, configure uma vez: `gh auth login` e `gh auth setup-git` (requer github-cli). Configure também seu nome e email do Git se ainda não estiverem definidos.
+O Git precisa estar autenticado para enviar. Se já consegue fazer push neste repositório, não precisa configurar novamente.
 
-## O que cada comando faz
+## Onde está cada coisa
 
-**`save`** copia suas configurações para `dotfiles/`, registra a lista de pacotes explicitamente instalados via pacman/AUR, cria um commit e envia ao GitHub. Links de dotfiles são seguidos: o GitHub recebe arquivos reais. Se um caminho estiver ausente nesta máquina, mantém a última cópia compartilhada. Para parar de compartilhar um caminho, remova a linha de `files.txt` e execute `save`.
+| Arquivo | Função |
+| --- | --- |
+| `backup` | Todo o código, dividido em leitura, save, pacotes e apply |
+| `files.txt` | Configurações que você quer compartilhar, relativas ao HOME |
+| `dotfiles/` | Cópias dessas configurações, versionadas no GitHub |
+| `packages/pacman.txt` | Aplicativos dos repositórios oficiais |
+| `packages/aur.txt` | Aplicativos AUR |
+| `tests/test_backup.py` | Testes com pastas temporárias e Git local |
 
-**`apply`** baixa a versão do GitHub, instala os pacotes que faltam e substitui as configurações locais pela versão compartilhada. Prepara yay, Oh My Zsh e os três plugins usados no seu Zsh quando necessários. Os gerenciadores mantêm as confirmações de instalação. Não remove programas extras e não força versões iguais dos pacotes: mantenha o Arch atualizado nas duas máquinas.
+Para compartilhar uma configuração nova, acrescente o caminho a `files.txt` e execute `save`.
+Para compartilhar um programa novo, acrescente o nome à lista de pacotes correspondente e execute `save`.
 
-A inicialização do Homebrew no seu `.zshrc` compartilhado é condicional: funciona mesmo em uma máquina sem Homebrew. Pacotes do Homebrew não são sincronizados. O comando não troca seu shell de login; abra `zsh` ou selecione-o no terminal se necessário.
+**As listas de pacotes são intencionais: save não as sobrescreve com todos os pacotes da máquina.** Isso evita levar drivers Intel para um desktop AMD, trocar bootloader ou substituir componentes do Omarchy. O sistema operacional e os drivers ficam sob controle de cada computador.
 
-## O que é compartilhado
+## Conflitos de pacotes
 
-A lista está em **`files.txt`**. Inicialmente: Zsh, Starship, Kitty, Lazygit e Yazi, se instalado. Para acrescentar algo, escreva um caminho relativo à sua pasta pessoal:
+O comando consulta `pacman -T`: variantes que fornecem o mesmo pacote também contam como instaladas. Não tenta substituir `neovim-git` por `neovim`, por exemplo, quando a variante declara esse fornecimento.
 
-```text
-.config/btop
-```
+As configurações são aplicadas antes da instalação. Se pacman/yay falhar, o erro completo aparece e o comando termina com falha; ele não informa sucesso nem força remoções. As configurações continuam aplicadas. Para resolver um conflito específico, são necessários os nomes dos pacotes que aparecem nas linhas anteriores a “conflicting dependencies”. Após corrigir, execute `apply` novamente.
 
-Depois execute `./backup save`. Diretórios são copiados por inteiro. Não inclua configurações específicas de hardware, como monitores, se quiser mantê-las diferentes. `.ssh`, `.aws`, `.gnupg`, caches e caminhos fora do HOME são bloqueados.
+## Comportamento e recuperação
 
-## Cuidados que importam
+- Faça `apply` antes de começar a editar na outra máquina; faça `save` ao terminar. Históricos divergentes são recusados pelo Git, sem force push.
+- Diretórios selecionados são substituídos por inteiro. Os anteriores ficam em `~/.backup-rollback/DATA/`, com os mesmos caminhos relativos ao HOME e preservando os links originais. O caminho aparece no terminal. Para recuperação manual, mova o arquivo atual para outro local e recoloque a cópia anterior no caminho original.
+- `save` segue links dentro do HOME e envia arquivos reais. Rejeita ciclos, links quebrados, arquivos especiais e destinos privados ou fora do HOME. Caminhos ausentes mantêm a cópia compartilhada anterior, se existir.
+- Somente os caminhos de `files.txt` são sincronizados. Não inclua credenciais. A checagem de padrões comuns de segredos é limitada; use repositório privado para dados pessoais.
+- O Zsh compartilhado funciona sem Homebrew. Oh My Zsh e os três plugins usados são preparados se necessário. Homebrew e a troca do shell de login não são automatizados.
+- Para simular: `./backup save --dry-run` ou `./backup apply --dry-run`. A simulação não baixa atualizações.
+- Snapshots antigos permanecem em `snapshots/`, fora do Git; seus arquivos podem ser recuperados manualmente de `files/`.
 
-- Use `save` antes de sair de uma máquina e `apply` ao chegar na outra. Faça `apply` antes de começar a editar, para evitar versões divergentes.
-- `save` envia os arquivos selecionados ao GitHub. Use repositório privado se houver dados pessoais. Há uma checagem de padrões comuns de credenciais, mas ela não detecta todos os segredos.
-- Antes de substituir configurações, `apply` guarda os arquivos anteriores em `~/.backup-rollback/`. O caminho aparece no terminal; `originals/` preserva inclusive os links originais. Não existe exclusão automática dessas cópias.
-- Se o Git encontrar alterações locais ou históricos divergentes, o comando interrompe sem forçar sobrescrita. O commit criado por `save` continua guardado localmente se o envio falhar; execute novamente após corrigir a conexão/autenticação.
-- Para conferir sem modificar nada: `./backup save --dry-run` ou `./backup apply --dry-run`. A simulação de apply usa a cópia já disponível, sem baixar atualizações.
-
-Os snapshots locais antigos continuam em `snapshots/`, ignorados pelo Git. A ferramenta antiga fica em `lib/backup.py` para recuperação excepcional; ela não faz parte do fluxo cotidiano. `install.sh` é um atalho para `apply`.
-
-## Testes
-
-```bash
-python3 -m unittest discover -s tests -v
-```
+Para testar o código: `python3 -m unittest discover -s tests -v`.

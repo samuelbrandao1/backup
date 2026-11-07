@@ -1,4 +1,276 @@
-#!/usr/bin/env bash
-set -euo pipefail
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 "$ROOT/lib/sync.py" "$@"
+#!/usr/bin/env python3
+"""save envia configurações ao GitHub; apply baixa, instala e aplica."""
+import argparse
+from datetime import datetime
+import fcntl
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parent
+HOME = Path.home()
+# Inclui os caminhos antigos para que a limpeza também seja enviada ao GitHub.
+PROJECT_FILES = ['backup', 'README.md', 'files.txt', '.gitignore', 'dotfiles',
+                 'packages', 'tests', 'lib', 'profiles', 'install.sh', 'config.sh', 'remove.sh']
+PRIVATE = {'.ssh', '.gnupg', '.aws', '.cache', '.local', '.git', '.backup-rollback'}
+
+
+# Leitura das listas e execução de comandos.
+def read_list(path):
+    return list(dict.fromkeys(line.split('#', 1)[0].strip()
+                             for line in path.read_text().splitlines()
+                             if line.split('#', 1)[0].strip()))
+
+
+def run(*args, capture=False, check=True, cwd=None):
+    return subprocess.run(args, cwd=ROOT if cwd is None else cwd, check=check, text=True,
+                          stdout=subprocess.PIPE if capture else None)
+
+
+def git(*args):
+    return run('git', *args, capture=True).stdout.strip()
+
+
+def config_paths():
+    paths = [Path(value) for value in read_list(ROOT / 'files.txt')]
+    for path in paths:
+        if path.is_absolute() or '..' in path.parts or path == Path('.') or path.parts[0] in PRIVATE:
+            raise ValueError(f'Caminho não permitido em files.txt: {path}')
+    return sorted({p for p in paths if not any(parent in paths for parent in p.parents)})
+
+
+def validate_tree(path, *, follow_links=False, parents=()):
+    """Permite dotfiles com links no HOME; o repositório guarda arquivos reais."""
+    if path.is_symlink() and not follow_links:
+        raise ValueError(f'Link inesperado no backup: {path}')
+    resolved = path.resolve(strict=True)
+    if follow_links:
+        if not resolved.is_relative_to(HOME.resolve()):
+            raise ValueError(f'Link aponta para fora do HOME: {path}')
+        relative = resolved.relative_to(HOME.resolve())
+        if not relative.parts or relative.parts[0] in PRIVATE:
+            raise ValueError(f'Destino privado ou amplo demais: {path}')
+        if resolved.is_dir() and ROOT.is_relative_to(resolved):
+            raise ValueError(f'O backup não pode incluir o próprio repositório: {path}')
+    if resolved in parents:
+        raise ValueError(f'Ciclo de links: {path}')
+    if path.is_dir():
+        for child in path.iterdir():
+            validate_tree(child, follow_links=follow_links, parents=(*parents, resolved))
+    elif not path.is_file():
+        raise ValueError(f'Arquivo especial não suportado: {path}')
+
+
+def copy(source, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, destination)
+    else:
+        shutil.copy2(source, destination)
+
+
+def check_secrets(folder):
+    """Bloqueia padrões comuns; não substitui revisar o que será publicado."""
+    pattern = rb'-----BEGIN (?:OPENSSH |RSA |EC )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|sk-(?:proj-)?[A-Za-z0-9_-]{24,}|(?im:^\s*(?:export\s+)?\w*(?:TOKEN|PASSWORD|SECRET|API_KEY)\s*=\s*[\'\"]?(?!\$)[A-Za-z0-9_+/=-]{12,})'
+    for path in folder.rglob('*'):
+        if path.is_file() and re.search(pattern, path.read_bytes()):
+            raise ValueError(f'Possível credencial em {path.relative_to(folder)}. Remova antes de enviar.')
+
+
+# SAVE: coleta apenas configurações; as listas de aplicativos são estáveis.
+def collect_configs(destination):
+    count = 0
+    for relative in config_paths():
+        source = HOME / relative
+        if source.exists() or source.is_symlink():
+            validate_tree(source, follow_links=True)
+        else:
+            source = ROOT / 'dotfiles' / relative
+            if not source.exists():
+                print(f'Ausente, ignorado: {relative}')
+                continue
+            validate_tree(source)
+        copy(source, destination / relative)
+        print(f'Salvando: {relative}')
+        count += 1
+    if not count:
+        raise ValueError('Nenhuma configuração encontrada. Confira files.txt.')
+    # O Zsh original chama Homebrew por caminho fixo. Torna essa chamada opcional.
+    zshrc = destination / '.zshrc'
+    if zshrc.is_file():
+        brew = 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv zsh)"'
+        zshrc.write_text(re.sub('(?m)^' + re.escape(brew) + '$',
+                               lambda _: '[[ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]] || ' + brew,
+                               zshrc.read_text()))
+    check_secrets(destination)
+
+
+def save(dry=False):
+    branch = git('branch', '--show-current')
+    if not branch:
+        raise ValueError('O repositório precisa estar em uma branch.')
+    with tempfile.TemporaryDirectory(prefix='backup-') as directory:
+        staged = Path(directory) / 'dotfiles'
+        staged.mkdir()
+        collect_configs(staged)
+        if dry:
+            print('Simulação: salvar configurações, criar commit e enviar ao GitHub. Listas de pacotes preservadas.')
+            return
+        target = ROOT / 'dotfiles'
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.move(str(staged), str(target))
+    # Inclui arquivos existentes e exclusões de arquivos que já eram versionados.
+    tracked = set(git('ls-files').splitlines())
+    paths = [p for p in PROJECT_FILES if (ROOT / p).exists() or any(t == p or t.startswith(p + '/') for t in tracked)]
+    run('git', 'add', '-A', '--', *paths)
+    staged = git('diff', '--cached', '--name-only').splitlines()
+    if any(not any(p == root or p.startswith(root + '/') for root in PROJECT_FILES) for p in staged):
+        raise ValueError('Há arquivos fora do projeto no stage. Revise o stage do Git.')
+    if staged:
+        run('git', 'commit', '-m', 'Sincroniza configurações e aplicativos')
+    # Um push normal recusa divergências; nunca usa force nem mescla arquivos pessoais.
+    run('git', 'push', '--set-upstream', 'origin', branch)
+    print('Pronto. Salvo no GitHub.')
+
+
+# PACOTES: compartilha aplicativos, não tenta clonar o sistema operacional.
+def missing_packages(filename):
+    packages = read_list(ROOT / 'packages' / filename)
+    if any(not re.fullmatch(r'[A-Za-z0-9@_+][A-Za-z0-9@_.+:-]*', name) for name in packages):
+        raise ValueError(f'Nome de pacote inválido em packages/{filename}.')
+    if not packages:
+        return []
+    # -T respeita Provides: neovim-git, por exemplo, pode satisfazer neovim.
+    result = run('pacman', '-T', '--', *packages, capture=True, check=False)
+    if result.returncode not in (0, 127):
+        raise ValueError('Não foi possível consultar os pacotes instalados.')
+    return result.stdout.splitlines()
+
+
+def install_packages(dry=False):
+    if not shutil.which('pacman') or not shutil.which('sudo'):
+        raise ValueError('A instalação exige Arch Linux, pacman e sudo.')
+    official = missing_packages('pacman.txt')
+    aur = missing_packages('aur.txt')
+    if not official and not aur:
+        print('Aplicativos já instalados.')
+        return
+    commands = []
+    if official:
+        commands.append(['sudo', 'pacman', '-Syu', '--needed', '--', *official])
+    if aur:
+        helper = shutil.which('yay') or shutil.which('paru')
+        if not helper:
+            raise ValueError('Instale yay ou paru para os aplicativos AUR, ou retire-os de packages/aur.txt.')
+        commands.append([helper, '-S', '--needed', '--', *aur])
+    for command in commands:
+        print('+', ' '.join(command), flush=True)
+        if not dry and run(*command, check=False).returncode:
+            raise ValueError('A instalação falhou; o erro do gerenciador está acima. '
+                             'Não force a remoção de dependências. Informe os nomes dos pacotes em conflito. '
+                             'As configurações já foram aplicadas; execute apply novamente após corrigir os pacotes.')
+
+
+def prepare_zsh(dry=False):
+    zshrc = ROOT / 'dotfiles/.zshrc'
+    if not zshrc.exists() or 'oh-my-zsh.sh' not in zshrc.read_text():
+        return
+    repositories = {
+        '.oh-my-zsh': 'ohmyzsh/ohmyzsh',
+        '.oh-my-zsh/custom/plugins/zsh-autosuggestions': 'zsh-users/zsh-autosuggestions',
+        '.oh-my-zsh/custom/plugins/zsh-syntax-highlighting': 'zsh-users/zsh-syntax-highlighting',
+        '.oh-my-zsh/custom/plugins/zsh-vi-mode': 'jeffreytse/zsh-vi-mode',
+    }
+    for relative, repo in repositories.items():
+        target = HOME / relative
+        if not target.exists():
+            print(f'Preparando: {relative}')
+            if not dry:
+                run('git', 'clone', '--depth=1', f'https://github.com/{repo}.git', str(target))
+
+
+# APPLY: preserva os arquivos atuais antes de substituir pelas cópias do GitHub.
+def apply_configs(dry=False):
+    sources = [(relative, ROOT / 'dotfiles' / relative) for relative in config_paths()
+               if (ROOT / 'dotfiles' / relative).exists()]
+    if not sources:
+        raise ValueError('Não há configurações no repositório. Execute save na origem.')
+    for relative, source in sources:
+        validate_tree(source)
+        if not (HOME / relative).parent.resolve().is_relative_to(HOME.resolve()):
+            raise ValueError(f'Diretório de destino aponta para fora do HOME: {relative}')
+    if dry:
+        for relative, _ in sources:
+            print(f'Aplicar: {relative}')
+        return
+    rollback = HOME / '.backup-rollback' / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+    rollback.mkdir(parents=True, mode=0o700)
+    journal = []
+    try:
+        for relative, source in sources:
+            target = HOME / relative
+            existed = target.exists() or target.is_symlink()
+            if existed:
+                previous = rollback / relative
+                previous.parent.mkdir(parents=True, exist_ok=True)
+                # Renomeia no próprio HOME: preserva inclusive links, sem alterar seus destinos.
+                target.rename(previous)
+            journal.append((relative, existed))
+            copy(source, target)
+            print(f'Aplicado: {relative}')
+    except Exception:
+        for relative, existed in reversed(journal):
+            target = HOME / relative
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+            if existed:
+                (rollback / relative).rename(target)
+        raise
+    print(f'Arquivos anteriores guardados em: {rollback}')
+
+
+def apply(dry=False):
+    prepare_zsh(dry)
+    apply_configs(dry)
+    install_packages(dry)
+    print('Simulação concluída.' if dry else 'Pronto. Configurações e aplicativos aplicados.')
+
+
+def main():
+    parser = argparse.ArgumentParser(description='save: enviar ao GitHub | apply: baixar e aplicar')
+    parser.add_argument('command', choices=['save', 'apply'])
+    parser.add_argument('--dry-run', action='store_true', help='Conferir sem modificar ou enviar')
+    parser.add_argument('--local', action='store_true', help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if os.geteuid() == 0:
+        raise ValueError('Execute como usuário comum. Apenas pacman usa sudo.')
+    if args.command == 'save':
+        save(args.dry_run)
+    elif args.dry_run or args.local:
+        apply(args.dry_run)
+    else:
+        if git('status', '--porcelain'):
+            raise ValueError('Há alterações no repositório. Salve-as antes de baixar a versão do GitHub.')
+        run('git', 'pull', '--ff-only')
+        # Executa o código atualizado que acabou de baixar.
+        os.execv(sys.executable, [sys.executable, str(ROOT / 'backup'), 'apply', '--local'])
+
+
+if __name__ == '__main__':
+    os.umask(0o077)
+    lock = os.open(ROOT, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        main()
+    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f'Erro: {error}', file=sys.stderr)
+        sys.exit(1)
+    finally:
+        os.close(lock)
